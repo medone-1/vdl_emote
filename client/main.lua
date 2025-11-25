@@ -112,6 +112,44 @@ local VorpCommands = {
 }
 
 
+-- Helper function: Play animation on local ped
+local function PlayLocalAnim(dict, anim, time, flag)
+    local ped = PlayerPedId()
+    RequestAnimDict(dict)
+    while not HasAnimDictLoaded(dict) do Citizen.Wait(10) end
+    local animFlag = (flag == 1 or flag == true) and 1 or 49
+    TaskPlayAnim(ped, dict, anim, 8.0, -8.0, time or -1, animFlag, 0, false, false, false)
+end
+
+
+-- Event: Receive sync request from another player to play animation
+RegisterNetEvent('vdl:client:playInteractiveAnim')
+AddEventHandler('vdl:client:playInteractiveAnim', function(senderServerId, animData)
+    local ped = PlayerPedId()
+    local senderPed = GetPlayerPed(GetPlayerFromServerId(senderServerId))
+
+    if not DoesEntityExist(senderPed) then return end
+
+    -- Load animation dictionary
+    RequestAnimDict(animData.dict2)
+    while not HasAnimDictLoaded(animData.dict2) do Citizen.Wait(10) end
+
+    -- Face the sender
+    local myCoords = GetEntityCoords(ped)
+    local senderCoords = GetEntityCoords(senderPed)
+    local dx = senderCoords.x - myCoords.x
+    local dy = senderCoords.y - myCoords.y
+    local heading = math.deg(math.atan2(dy, dx)) - 90.0
+
+    SetEntityHeading(ped, heading)
+    Citizen.Wait(100)
+
+    -- Play the receiving animation
+    TaskPlayAnim(ped, animData.dict2, animData.anim2, 8.0, -8.0, animData.time or -1, animData.flag or 1, 0, false, false,
+        false)
+end)
+
+
 -- NUI Callback: Play animation, scenario, emote or clothing action
 RegisterNUICallback('play', function(item, cb)
     local ped = PlayerPedId()
@@ -126,8 +164,9 @@ RegisterNUICallback('play', function(item, cb)
     -- Paired animation (player + nearest ped)
     if item.dict2 and item.anim2 then
         local coords = GetEntityCoords(ped)
-        local heading = GetEntityHeading(ped)
         local closestTarget, closestDistance = nil, 1.5
+        local closestServerId = nil
+        local isPlayer = false
 
         -- Try to find nearest player
         local players = GetActivePlayers()
@@ -138,6 +177,8 @@ RegisterNUICallback('play', function(item, cb)
                 if distance < closestDistance then
                     closestTarget = targetPed
                     closestDistance = distance
+                    closestServerId = GetPlayerServerId(player)
+                    isPlayer = true
                 end
             end
         end
@@ -151,32 +192,48 @@ RegisterNUICallback('play', function(item, cb)
                     if distance < closestDistance then
                         closestTarget = targetPed
                         closestDistance = distance
+                        isPlayer = false
                     end
                 end
             end
         end
 
-        -- If a partner found, play synced animations
+        -- If a partner found
         if closestTarget then
             RequestAnimDict(item.dict)
-            RequestAnimDict(item.dict2)
-            while not HasAnimDictLoaded(item.dict) or not HasAnimDictLoaded(item.dict2) do Citizen.Wait(10) end
+            while not HasAnimDictLoaded(item.dict) do Citizen.Wait(10) end
 
-            -- Rotate player and target to face each other
+            -- Rotate player to face target
             local targetCoords = GetEntityCoords(closestTarget)
             local dx = targetCoords.x - coords.x
             local dy = targetCoords.y - coords.y
             local playerHeading = math.deg(math.atan2(dy, dx)) - 90.0
 
             SetEntityHeading(ped, playerHeading)
-            SetEntityHeading(closestTarget, playerHeading - 180.0)
-
             Citizen.Wait(100)
 
-            -- Play the paired animation
+            -- Play initiator animation
             TaskPlayAnim(ped, item.dict, item.anim, 8.0, -8.0, item.time or -1, item.flag or 1, 0, false, false, false)
-            TaskPlayAnim(closestTarget, item.dict2, item.anim2, 8.0, -8.0, item.time or -1, item.flag or 1, 0, false,
-                false, false)
+
+            if isPlayer and closestServerId then
+                -- Send event to server to sync with the other player
+                TriggerServerEvent('vdl:server:syncInteractiveAnim', closestServerId, {
+                    dict2 = item.dict2,
+                    anim2 = item.anim2,
+                    time = item.time,
+                    flag = item.flag
+                })
+            else
+                -- NPC: We can control them directly
+                RequestAnimDict(item.dict2)
+                while not HasAnimDictLoaded(item.dict2) do Citizen.Wait(10) end
+
+                SetEntityHeading(closestTarget, playerHeading - 180.0)
+                Citizen.Wait(100)
+
+                TaskPlayAnim(closestTarget, item.dict2, item.anim2, 8.0, -8.0, item.time or -1, item.flag or 1, 0, false,
+                    false, false)
+            end
         end
 
         cb('ok')
